@@ -1,0 +1,26 @@
+# samconfig.toml.example — Copy to samconfig.toml and fill in values.
+#
+#   cp samconfig.toml.example samconfig.toml
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "data-analyst-agent"
+resolve_s3 = true
+s3_prefix = "data-analyst-agent"
+region = "us-east-2"
+capabilities = "CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+
+parameter_overrides = [
+    "ProjectName=data-analyst-agent",
+    "AnthropicEnvironmentId=env_YOUR_ENVIRONMENT_ID",
+    "DataBucketArn=arn:aws:s3:::YOUR-BUCKET-NAME",
+    "VpcId=vpc-YOUR-VPC-ID",
+    "SubnetIds=subnet-AAAA,subnet-BBBB",
+    # Optional: scope to a prefix
+    # "FileSystemPrefix=data/",
+    # Optional: provide secrets at deploy time (or populate out-of-band)
+    # "AnthropicEnvironmentKey=YOUR_ENV_KEY",
+    # "WebhookSigningSecret=whsec_YOUR_SECRET",
+]

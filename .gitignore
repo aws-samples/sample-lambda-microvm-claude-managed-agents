@@ -31,3 +31,4 @@ _reference_docs/
 
 # Kiro IDE config (local only)
 .kiro/
+examples/s3-files-data-analyst/microvm-image/worker/node_modules/

@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Data Analyst Agent — Claude Managed Agent with S3 Files access.
+  Extends the base Lambda MicroVM sample with an S3 Files filesystem
+  so the agent can read/write data as local files.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: data-analyst-agent
+    AllowedPattern: "^[a-z0-9][a-z0-9-]{1,40}[a-z0-9]$"
+    Description: Lower-case name prefix for all resources.
+
+  ImageNamePrefix:
+    Type: String
+    Default: data-analyst-worker
+    AllowedPattern: "^[a-zA-Z0-9][a-zA-Z0-9-_]{0,62}$"
+
+  AnthropicEnvironmentId:
+    Type: String
+    Description: The Claude self-hosted environment id (env_...).
+
+  MicroVmImageIdentifier:
+    Type: String
+    Default: data-analyst-worker
+
+  AnthropicEnvironmentKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional. Anthropic environment key. If blank, populate the secret out-of-band.
+
+  WebhookSigningSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional. Webhook signing secret (whsec_...).
+
+  # ── S3 Files parameters ──────────────────────────────────────────────────
+  DataBucketArn:
+    Type: String
+    Description: >-
+      ARN of the existing S3 bucket to expose via S3 Files.
+      Example: arn:aws:s3:::my-data-bucket
+    AllowedPattern: "^arn:aws:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+
+  FileSystemPrefix:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional S3 prefix to scope the file system (e.g., "data/").
+      If blank, the entire bucket is accessible.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where S3 Files mount targets and MicroVMs will run.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets (in different AZs) for S3 Files mount targets.
+
+Conditions:
+  HasEnvironmentKey: !Not [!Equals [!Ref AnthropicEnvironmentKey, ""]]
+  HasSigningSecret: !Not [!Equals [!Ref WebhookSigningSecret, ""]]
+  HasPrefix: !Not [!Equals [!Ref FileSystemPrefix, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.14
+    Architectures: [arm64]
+    Timeout: 30
+    MemorySize: 1024
+
+Resources:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # S3 Files — filesystem backed by your S3 bucket
+  #
+  # NOTE: The MicroVM image MUST be created with:
+  #   --additional-os-capabilities '["ALL"]'
+  # to enable NFS mounts inside the container. Without this, mount() syscalls
+  # are denied by the default restricted Linux capabilities.
+  #
+  # The image MUST use the Lambda MicroVM managed base image:
+  #   --base-image-arn arn:aws:lambda:<region>:aws:microvm-image:al2023-1
+  #
+  # A VPC egress network connector is required so the MicroVM can reach
+  # S3 Files mount targets (NFS port 2049) within the VPC.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # IAM role that S3 Files assumes to sync data between the filesystem and S3.
+  S3FilesServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-s3files-service-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: elasticfilesystem.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: s3-bucket-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                  - "s3:DeleteObject"
+                  - "s3:ListBucket"
+                Resource:
+                  - !Ref DataBucketArn
+                  - !Sub "${DataBucketArn}/*"
+
+  # Security group for S3 Files mount targets (allows NFS inbound from VPC).
+  S3FilesMountTargetSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "Allow NFS access to ${ProjectName} S3 Files mount targets"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          CidrIp: "0.0.0.0/0"
+          Description: "NFS from VPC (MicroVMs)"
+
+  # The S3 File System itself.
+  # NOTE: As of June 2026, S3 Files uses the `aws s3files` CLI namespace.
+  # CloudFormation support may require a custom resource or AWS::EFS::FileSystem
+  # with S3 Files integration. This template uses the EFS-backed approach that
+  # S3 Files creates under the hood.
+  #
+  # If CloudFormation native support is available for AWS::S3::FileSystem,
+  # replace this with the native resource. Otherwise, use the custom resource
+  # in scripts/deploy.sh to create via CLI and pass the filesystem ID as a
+  # stack parameter.
+  S3FilesFileSystemId:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/s3-files-filesystem-id"
+      Type: String
+      Value: "PLACEHOLDER-SET-BY-DEPLOY-SCRIPT"
+      Description: >-
+        S3 Files filesystem ID. Populated by deploy.sh after creating the
+        filesystem via CLI (CloudFormation doesn't yet support AWS::S3::FileSystem).
+
+  S3FilesMountTargetDns:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/s3-files-mount-target-dns"
+      Type: String
+      Value: "PLACEHOLDER-SET-BY-DEPLOY-SCRIPT"
+      Description: DNS name of the S3 Files mount target for NFS mounts.
+
+  # VPC egress network connector — allows the MicroVM to reach S3 Files
+  # mount targets (NFS port 2049) within the VPC. The connector must be in
+  # the same region as the image and uses the same subnets/SGs.
+  #
+  # NOTE: VPC egress connector creation is done via deploy.sh using:
+  #   aws lambda-core create-network-connector
+  # because CloudFormation doesn't yet support this resource type.
+  # The connector ARN is stored in SSM for the launcher to reference.
+  VpcEgressConnectorArn:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/vpc-egress-connector-arn"
+      Type: String
+      Value: "PLACEHOLDER-SET-BY-DEPLOY-SCRIPT"
+      Description: >-
+        VPC egress network connector ARN for MicroVM to reach S3 Files.
+        Created by deploy.sh via lambda-core create-network-connector.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Launcher Lambda + Webhook API (same as base sample)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  LauncherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-launcher"
+      CodeUri: ../microvm-image/../../../src/functions/
+      Handler: launcher.handler
+      Environment:
+        Variables:
+          ANTHROPIC_ENVIRONMENT_ID: !Ref AnthropicEnvironmentId
+          MICROVM_IMAGE_IDENTIFIER: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:${MicroVmImageIdentifier}"
+          ENVIRONMENT_KEY_SECRET_ARN: !Ref EnvironmentKeySecret
+          MICROVM_EXECUTION_ROLE_ARN: !GetAtt MicroVmExecutionRole.Arn
+          SIGNING_SECRET_ARN: !Ref SigningSecret
+          IDEMPOTENCY_TABLE: !Ref IdempotencyTable
+          # S3 Files config passed into run-hook dispatch
+          S3_FILES_MOUNT_DNS: !GetAtt S3FilesMountTargetDns.Value
+          S3_FILES_MOUNT_PATH: "/mnt/s3files"
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SigningSecret
+        - Statement:
+            - Effect: Allow
+              Action: "lambda:RunMicroVm"
+              Resource: "*"
+            - Effect: Allow
+              Action: "iam:PassRole"
+              Resource: !GetAtt MicroVmExecutionRole.Arn
+            - Effect: Allow
+              Action: "lambda:PassNetworkConnector"
+              Resource:
+                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:ALL_INGRESS"
+                - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+            - Effect: Allow
+              Action:
+                - "dynamodb:GetItem"
+                - "dynamodb:PutItem"
+                - "dynamodb:UpdateItem"
+                - "dynamodb:DeleteItem"
+              Resource: !GetAtt IdempotencyTable.Arn
+      Events:
+        Webhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref WebhookApi
+            Path: /webhook
+            Method: POST
+
+  WebhookApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${ProjectName}-webhook-api"
+      StageName: prod
+      EndpointConfiguration:
+        Type: REGIONAL
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Idempotency table
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  IdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TableName: !Sub "${ProjectName}-idempotency"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiration
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Secrets
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  EnvironmentKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/anthropic-environment-key"
+      Description: Anthropic environment key.
+      SecretString: !If [HasEnvironmentKey, !Ref AnthropicEnvironmentKey, !Ref "AWS::NoValue"]
+
+  SigningSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}/anthropic-webhook-signing-secret"
+      Description: Anthropic webhook signing secret (whsec_...).
+      SecretString: !If [HasSigningSecret, !Ref WebhookSigningSecret, !Ref "AWS::NoValue"]
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MicroVM execution role — extended with S3 Files (EFS) mount permissions
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  MicroVmExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-microvm-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+              - "sts:TagSession"
+      Policies:
+        # Read the environment key
+        - PolicyName: read-environment-key
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "secretsmanager:GetSecretValue"
+                Resource: !Ref EnvironmentKeySecret
+        # Mount and write to S3 Files (EFS-backed)
+        - PolicyName: s3-files-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "elasticfilesystem:ClientMount"
+                  - "elasticfilesystem:ClientWrite"
+                  - "elasticfilesystem:ClientRootAccess"
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "aws:ResourceTag/project": !Ref ProjectName
+
+Outputs:
+  WebhookUrl:
+    Description: Webhook endpoint URL to register with Anthropic
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/prod/webhook"
+
+  MicroVmExecutionRoleArn:
+    Description: MicroVM execution role ARN
+    Value: !GetAtt MicroVmExecutionRole.Arn
+
+  DataBucket:
+    Description: S3 bucket backing the file system
+    Value: !Ref DataBucketArn
+
+  S3FilesParameterPath:
+    Description: SSM parameter path for filesystem ID (set by deploy.sh)
+    Value: !Sub "/${ProjectName}/s3-files-filesystem-id"
+
+  S3FilesServiceRoleArn:
+    Description: IAM role ARN for S3 Files filesystem
+    Value: !GetAtt S3FilesServiceRole.Arn
+
+  MountTargetSecurityGroup:
+    Description: Security group for S3 Files mount targets
+    Value: !Ref S3FilesMountTargetSG

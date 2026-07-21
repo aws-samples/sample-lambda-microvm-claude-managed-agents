@@ -1,0 +1,13 @@
+{
+  "name": "data-analyst-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MicroVM worker for Data Analyst Agent with S3 Files access",
+  "main": "worker.mjs",
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "@aws-sdk/client-secrets-manager": "^3.600.0"
+  }
+}
