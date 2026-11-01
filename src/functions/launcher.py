@@ -253,6 +253,11 @@ def handler(
         if not verifier(raw_body, headers, signing_secret):
             logger.info("denying webhook: signature verification failed")
             return {"statusCode": 401, "body": "signature verification failed"}
+    else:
+        # No signing secret configured: verification cannot run, so deny
+        # instead of accepting an unverified webhook.
+        logger.info("denying webhook: signing secret not configured")
+        return {"statusCode": 401, "body": "signature verification not configured"}
 
     client = Boto3MicroVmClient(region_name=config.aws_region)
     launcher = Launcher(config, client)
