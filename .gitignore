@@ -1,21 +1,11 @@
-# Python bytecode / caches
-__pycache__/
-*.py[cod]
-
-# Packaging / build artifacts
-*.egg-info/
+# Gradle / Kotlin build output and caches
+.gradle/
+.kotlin/
 build/
-dist/
 
-# Test / type-check caches
-.pytest_cache/
-.hypothesis/
-.mypy_cache/
-.ruff_cache/
-
-# Local virtual environments
-.venv/
-venv/
+# IDE
+.idea/
+*.iml
 
 # macOS
 .DS_Store

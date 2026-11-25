@@ -45,11 +45,11 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.14
+    Runtime: java21
     Architectures: [arm64]
     Timeout: 30
-    # Lambda CPU scales with memory. The launcher imports anthropic (+ pydantic,
-    # httpx) for webhook verification; at 128 MB the cold-start import alone can
+    # Lambda CPU scales with memory. The launcher loads the Anthropic SDK (webhook
+    # verification) and the AWS SDK on the JVM; at 128 MB class loading alone can
     # exceed the timeout. 1024 MB gives ~1 vCPU so cold init is a few seconds.
     MemorySize: 1024
 
@@ -59,10 +59,15 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${ProjectName}-launcher"
+      # Kotlin module, built by `sam build` with the repo's Gradle wrapper.
       CodeUri: src/functions/
-      Handler: launcher.handler
+      Handler: com.example.claudemicrovm.launcher.LauncherHandler::handleRequest
       Environment:
         Variables:
+          # Powertools structured-logging service name.
+          POWERTOOLS_SERVICE_NAME: !Sub "${ProjectName}-launcher"
+          # Stop at the C1 JIT tier: faster JVM cold starts for a short-lived handler.
+          JAVA_TOOL_OPTIONS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
           ANTHROPIC_ENVIRONMENT_ID: !Ref AnthropicEnvironmentId
           # RunMicroVm requires the full image ARN, not a bare name. Build it
           # from the configured name + this account/region.

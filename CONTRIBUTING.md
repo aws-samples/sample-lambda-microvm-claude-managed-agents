@@ -37,7 +37,7 @@ To send us a pull request, please:
 
 1. Fork the repository.
 2. Modify the source; please focus on the specific change you are contributing.
-3. Ensure local tests pass (`pytest`).
+3. Ensure local tests pass (`./gradlew test`).
 4. Commit to your fork using clear commit messages.
 5. Send us a pull request, answering any default questions in the pull request
    interface.

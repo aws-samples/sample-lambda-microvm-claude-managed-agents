@@ -1,0 +1,46 @@
+[versions]
+kotlin = "2.4.21"
+kotlinx-coroutines = "1.11.0"
+anthropic = "3.10.0"
+aws-sdk = "2.59.4"
+aws-lambda-core = "1.4.1"
+aws-lambda-events = "3.16.1"
+powertools = "2.11.0"
+jackson = "2.19.4"
+slf4j = "2.0.17"
+junit = "6.1.3"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+
+anthropic-java = { module = "com.anthropic:anthropic-java", version.ref = "anthropic" }
+
+aws-sdk-bom = { module = "software.amazon.awssdk:bom", version.ref = "aws-sdk" }
+aws-sdk-lambdamicrovms = { module = "software.amazon.awssdk:lambdamicrovms" }
+aws-sdk-ssm = { module = "software.amazon.awssdk:ssm" }
+aws-sdk-s3 = { module = "software.amazon.awssdk:s3" }
+aws-sdk-cloudformation = { module = "software.amazon.awssdk:cloudformation" }
+aws-sdk-url-connection-client = { module = "software.amazon.awssdk:url-connection-client" }
+
+aws-lambda-java-core = { module = "com.amazonaws:aws-lambda-java-core", version.ref = "aws-lambda-core" }
+aws-lambda-java-events = { module = "com.amazonaws:aws-lambda-java-events", version.ref = "aws-lambda-events" }
+
+powertools-idempotency-dynamodb = { module = "software.amazon.lambda:powertools-idempotency-dynamodb", version.ref = "powertools" }
+powertools-parameters-ssm = { module = "software.amazon.lambda:powertools-parameters-ssm", version.ref = "powertools" }
+powertools-logging-log4j = { module = "software.amazon.lambda:powertools-logging-log4j", version.ref = "powertools" }
+
+jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind" }
+jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin" }
+
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+slf4j-simple = { module = "org.slf4j:slf4j-simple", version.ref = "slf4j" }
+
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+kotlin-test-junit5 = { module = "org.jetbrains.kotlin:kotlin-test-junit5", version.ref = "kotlin" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
