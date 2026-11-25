@@ -65,13 +65,15 @@ environment key**. The organization API key is never placed on any AWS compute.
 
 - An AWS account with permissions for S3, IAM, SSM Parameter Store, API Gateway,
   Lambda, WAF, CloudWatch Logs, and AWS Lambda MicroVM.
-- AWS CLI v2+ configured with the Lambda MicroVMs service model installed
-  (`aws configure add-model`).
+- AWS credentials configured locally (AWS CLI v2+ profile or environment
+  variables). The CLI with the Lambda MicroVMs service model installed
+  (`aws configure add-model`) is used for the SSM and MicroVM commands below.
 - The [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html).
+- JDK 17+ to run Gradle (the wrapper `./gradlew` is included). The modules
+  compile against a JDK 21 toolchain, which Gradle downloads if none is installed.
 - An existing Claude [Managed Agents agent](https://platform.claude.com/docs/en/managed-agents/agent-setup)
   (note its agent ID) and a `self_hosted` environment (note its `env_...` id).
 - A webhook signing secret and an environment key, both generated in the Claude Console.
-- `zip` available locally (used to package the MicroVM image source).
 
 ## Project Structure
 
@@ -80,24 +82,36 @@ environment key**. The organization API key is never placed on any AWS compute.
 ├── template.yaml                    # SAM template: launcher + REST API, WAF,
 │                                    #   MicroVM execution role, image
 │                                    #   build role + artifact bucket
+├── settings.gradle.kts              # Gradle multi-project build (Kotlin, JDK 21)
+├── gradle/libs.versions.toml        # Dependency versions (Anthropic Java SDK, AWS SDK v2, Powertools)
 ├── src/
-│   ├── microvm-image/               # Contents zipped into the MicroVM image
-│   │   ├── Dockerfile               # AL2023 + Node worker, /workspace, /mnt/session/outputs
-│   │   └── worker/worker.mjs        # HTTP lifecycle-hook server (EnvironmentWorker)
-│   ├── functions/                   # Launcher Lambda (sam build packages this)
-│   │   ├── launcher.py              # Verifies webhook signature; RunMicrovm per session
-│   │   ├── requirements.txt         # Launcher deps (anthropic[webhooks], powertools, bundled boto3/botocore)
-│   │   ├── shared/                  # Payload, rate limiter, MicroVM client, types
-│   │   └── wheels/                  # Vendored boto3/botocore wheels (lambda-microvms client)
-│   ├── scripts/
-│   │   ├── build-image.sh           # Zip + upload + create-microvm-image
-│   │   └── verify.py                # Operator-side: create a session to exercise the flow
+│   ├── microvm-image/               # The MicroVM image
+│   │   ├── Dockerfile               # AL2023 + Corretto 21 worker, /workspace, /mnt/session/outputs
+│   │   └── worker/                  # Gradle module `:worker` (in-VM worker, Kotlin)
+│   │       └── src/main/kotlin/…/worker/
+│   │           ├── Main.kt, HookServer.kt     # HTTP lifecycle-hook server
+│   │           ├── SessionHandler.kt          # SSM key fetch, work-queue claim, self-terminate
+│   │           ├── session/                   # WorkPoller, EnvironmentWorker (lease heartbeat),
+│   │           │                              #   SessionToolRunner, skill download
+│   │           ├── tools/                     # agent_toolset_20260401: bash, read, write, edit, glob, grep
+│   │           └── anthropic/                 # Adapter over the Anthropic Java SDK
+│   ├── functions/                   # Gradle module `:launcher` (Launcher Lambda, sam build packages this)
+│   │   └── src/main/kotlin/…/launcher/
+│   │       ├── LauncherHandler.kt   # Verifies webhook signature; RunMicrovm per session
+│   │       ├── Launcher.kt          # Launch logic (event filtering, 502 on failure)
+│   │       ├── Idempotency.kt       # Powertools Idempotency (DynamoDB) on the webhook event id
+│   │       └── …                    # Payload, rate limiter, MicroVM client, config
+│   └── scripts/                     # Gradle module `:scripts` (operator tooling)
+│       └── src/main/kotlin/…/scripts/
+│           ├── BuildImage.kt        # Upload app.zip + create-microvm-image
+│           └── Verify.kt            # Operator-side: create a session to exercise the flow
 ├── docs/                            # Architecture diagram + notes
-├── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md
-└── pyproject.toml  requirements.txt
+└── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md
 ```
 
 `samconfig.toml` and `.aws-sam/` are generated locally by SAM and are git-ignored.
+
+Run all unit tests with `./gradlew test`.
 
 ## Deployment
 
@@ -114,6 +128,9 @@ The deploy is **one IaC step plus three out-of-band steps**:
 sam build
 sam deploy --guided --capabilities CAPABILITY_NAMED_IAM --parameter-overrides "AnthropicEnvironmentId=env_..."
 ```
+
+`sam build` compiles and tests the launcher with the repo's Gradle wrapper and
+packages its classes plus `lib/*.jar` for the `java21` runtime.
 
 `--guided` prompts for the stack name and region and writes your answers to
 `samconfig.toml` (git-ignored), so subsequent deploys are just `sam build && sam
@@ -143,11 +160,14 @@ key instead.
 ### 3. Build the MicroVM image (CLI)
 
 ```bash
-./src/scripts/build-image.sh
+./gradlew :scripts:buildImage                          # stack name defaults to claude-microvm-sandbox
+./gradlew :scripts:buildImage --args="<stack-name>"    # or name the stack explicitly
 ```
 
-The script zips `src/microvm-image/`, uploads to S3, and creates the image with
-lifecycle hooks enabled. Monitor the build in CloudWatch under
+The task packages `app.zip` (the `Dockerfile` at the root plus the worker jars
+under `worker/lib/`), uploads it to the stack's artifact bucket, and creates the
+image with lifecycle hooks enabled. `IMAGE_NAME`, `BASE_IMAGE_ARN`, `S3_KEY` and
+`AWS_REGION` override the defaults. Monitor the build in CloudWatch under
 `/aws/lambda/microvms/<image-name>`; the image transitions
 `IN_PROGRESS → SUCCESSFUL`.
 
@@ -157,7 +177,7 @@ lifecycle hooks enabled. Monitor the build in CloudWatch under
 export ANTHROPIC_API_KEY="sk-ant-..."          # organization-scoped, operator only
 export ANTHROPIC_ENVIRONMENT_ID="env_..."
 export AGENT_ID="agent_..."
-python src/scripts/verify.py --create
+./gradlew :scripts:verify --args="--create"
 ```
 
 This creates a session, triggers the webhook, launches a MicroVM, and runs the
@@ -188,7 +208,7 @@ compute.
 | No MicroVM launches | Check the launcher logs; confirm the webhook is registered for `session.status_run_started` and the image identifier is correct. |
 | Duplicate launches | Shouldn't occur — the launcher dedupes on webhook event id; retries reuse the id. |
 | Image build fails `S3_*` | Build role/bucket issue. Confirm the artifact is in the same region, not in Glacier, and the Build role grants `s3:GetObject`. |
-| Image build fails `ARCHIVE_DOCKERFILE_NOT_FOUND` | Dockerfile must be at the root of `app.zip`; `build-image.sh` zips from inside `microvm-image/`. |
+| Image build fails `ARCHIVE_DOCKERFILE_NOT_FOUND` | Dockerfile must be at the root of `app.zip`; `./gradlew :worker:imageZip` (run by `:scripts:buildImage`) puts it there. |
 
 ## Cost
 
